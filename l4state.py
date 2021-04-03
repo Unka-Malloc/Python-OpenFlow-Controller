@@ -39,9 +39,56 @@ class L4State14(app_manager.RyuApp):
         dp = msg.datapath
         ofp, psr, did = (dp.ofproto, dp.ofproto_parser, format(dp.id, '016d'))
         eth = pkt.get_protocols(ethernet.ethernet)[0]
-        #
-        # write your code here
-        #
+        # code start
+        dst = eth.dst
+        src = eth.src
+
+        self.mac_to_port.setdefault(did, {})
+
+        # self.logger.info("packet in %s %s %s %s", dpid, src, dst, in_port)
+
+        # learn a mac address to avoid FLOOD next time.
+        self.mac_to_port[did][src] = in_port
+
+        if dst in self.mac_to_port[did]:
+            out_port = self.mac_to_port[did][dst]
+        else:
+            out_port = ofp.OFPP_FLOOD
+
+        l2_learning_actions = [psr.OFPActionOutput(out_port)]
+        actions = [psr.OFPActionOutput(out_port),
+                   psr.OFPActionOutput(self.snort_port)]
+        if out_port != ofp.OFPP_FLOOD:
+            match = psr.OFPMatch(in_port=in_port, eth_dst=dst)
+            self.add_flow(dp, 1, match, l2_learning_actions)
+
+            # Detect HTTP server traffic
+            match_http_out = psr.OFPMatch(in_port=in_port,
+                                             eth_dst=dst,
+                                             eth_type=ethernet.ETH_TYPE_IP,
+                                             ip_proto=in_proto.IPPROTO_TCP,
+                                             tcp_dst=80)
+
+            match_irc_in = psr.OFPMatch(in_port=in_port,
+                                           eth_dst=dst,
+                                           eth_type=ethernet.ETH_TYPE_IP,
+                                           ip_proto=in_proto.IPPROTO_TCP,
+                                           tcp_src=6667)
+
+            self.add_flow(dp, 10, match_http_out, actions)
+            self.add_flow(dp, 10, match_irc_in, actions)
+
+            # Detect Ping packet
+            match_ping = psr.OFPMatch(in_port=in_port,
+                                         eth_dst=dst,
+                                         eth_type=ethernet.ETH_TYPE_IP,
+                                         ip_proto=in_proto.IPPROTO_ICMP)
+
+            self.add_flow(dp, 10, match_ping, actions)
+
+        # For packet-out
+        acts = l2_learning_actions
+        # code end
         data = msg.data if msg.buffer_id == ofp.OFP_NO_BUFFER else None
         out = psr.OFPPacketOut(datapath=dp, buffer_id=msg.buffer_id,
                                in_port=in_port, actions=acts, data=data)
