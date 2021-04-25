@@ -40,54 +40,41 @@ class L4State14(app_manager.RyuApp):
         ofp, psr, did = (dp.ofproto, dp.ofproto_parser, format(dp.id, '016d'))
         eth = pkt.get_protocols(ethernet.ethernet)[0]
         # code start
-        dst = eth.dst
-        src = eth.src
-
-        self.mac_to_port.setdefault(did, {})
-
-        # self.logger.info("packet in %s %s %s %s", dpid, src, dst, in_port)
-
-        # learn a mac address to avoid FLOOD next time.
-        self.mac_to_port[did][src] = in_port
-
-        if dst in self.mac_to_port[did]:
-            out_port = self.mac_to_port[did][dst]
-        else:
-            out_port = ofp.OFPP_FLOOD
-
-        l2_learning_actions = [psr.OFPActionOutput(out_port)]
-        actions = [psr.OFPActionOutput(out_port),
-                   psr.OFPActionOutput(self.snort_port)]
-        if out_port != ofp.OFPP_FLOOD:
-            match = psr.OFPMatch(in_port=in_port, eth_dst=dst)
-            self.add_flow(dp, 1, match, l2_learning_actions)
-
-            # Detect HTTP server traffic
-            match_http_out = psr.OFPMatch(in_port=in_port,
-                                             eth_dst=dst,
-                                             eth_type=ethernet.ETH_TYPE_IP,
-                                             ip_proto=in_proto.IPPROTO_TCP,
-                                             tcp_dst=80)
-
-            match_irc_in = psr.OFPMatch(in_port=in_port,
-                                           eth_dst=dst,
-                                           eth_type=ethernet.ETH_TYPE_IP,
-                                           ip_proto=in_proto.IPPROTO_TCP,
-                                           tcp_src=6667)
-
-            self.add_flow(dp, 10, match_http_out, actions)
-            self.add_flow(dp, 10, match_irc_in, actions)
-
-            # Detect Ping packet
-            match_ping = psr.OFPMatch(in_port=in_port,
-                                         eth_dst=dst,
-                                         eth_type=ethernet.ETH_TYPE_IP,
-                                         ip_proto=in_proto.IPPROTO_ICMP)
-
-            self.add_flow(dp, 10, match_ping, actions)
-
-        # For packet-out
-        acts = l2_learning_actions
+        out_port = 2 if in_port == 1 else 1
+        acts = [psr.OFPActionOutput(out_port)]
+        iph = pkt.get_protocols(ipv4.ipv4)
+        tcph = pkt.get_protocols(tcp.tcp)
+        flow_key = ()
+        if len(iph) > 0 and len(tcph) > 0:
+            flow_key = (iph[0].src, iph[0].dst, tcph[0].src_port, tcph[0].dst_port)
+            flow_key_reverse = (iph[0].dst, iph[0].src, tcph[0].dst_port, tcph[0].src_port)
+            if in_port == 1:
+                self.ht.add(flow_key)
+                mtc = psr.OFPMatch(in_port=in_port,
+                    eth_type=ETH_TYPE_IP,
+                    ipv4_src=iph[0].src,
+                    ipv4_dst=iph[0].dst,
+                    ip_proto=in_proto.IPPROTO_TCP,
+                    tcp_src=tcph[0].src_port,
+                    tcp_dst=tcph[0].dst_port)
+                self.add_flow(dp, 1, mtc, acts, msg.buffer_id)
+                if msg.buffer_id != ofp.OFP_NO_BUFFER:
+                    return
+            if in_port == 2:
+                if not flow_key_reverse in self.ht:
+                    acts = [psr.OFPActionOutput(ofp.OFPPC_NO_FWD)]
+                else:
+                    acts = [psr.OFPActionOutput(1)]
+                    mtc = psr.OFPMatch(in_port=in_port,
+                        eth_type=ETH_TYPE_IP,
+                        ipv4_src=iph[0].src,
+                        ipv4_dst=iph[0].dst,
+                        ip_proto=in_proto.IPPROTO_TCP,
+                        tcp_src=tcph[0].src_port,
+                        tcp_dst=tcph[0].dst_port)
+                    self.add_flow(dp, 1, mtc, acts, msg.buffer_id)
+                    if msg.buffer_id != ofp.OFP_NO_BUFFER:
+                        return
         # code end
         data = msg.data if msg.buffer_id == ofp.OFP_NO_BUFFER else None
         out = psr.OFPPacketOut(datapath=dp, buffer_id=msg.buffer_id,

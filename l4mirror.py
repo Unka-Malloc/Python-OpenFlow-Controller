@@ -43,9 +43,49 @@ class L4Mirror14(app_manager.RyuApp):
         tcph = pkt.get_protocols(tcp.tcp)
 
         out_port = 2 if in_port == 1 else 1
-        #
-        # write your code here
-        #
+        #code start
+        acts = [psr.OFPActionOutput(out_port)]
+        iph = pkt.get_protocols(ipv4.ipv4)
+        tcph = pkt.get_protocols(tcp.tcp)
+        flow_key = ()
+        if len(iph) > 0 and len(tcph) > 0:
+            flow_key = (iph[0].src, iph[0].dst, tcph[0].src_port, tcph[0].dst_port)
+            if in_port == 1:
+                mtc = psr.OFPMatch(in_port=in_port,
+                    eth_type=ETH_TYPE_IP,
+                    ipv4_src=iph[0].src,
+                    ipv4_dst=iph[0].dst,
+                    ip_proto=in_proto.IPPROTO_TCP,
+                    tcp_src=tcph[0].src_port,
+                    tcp_dst=tcph[0].dst_port)
+                self.add_flow(dp, 1, mtc, acts, msg.buffer_id)
+                if msg.buffer_id != ofp.OFP_NO_BUFFER:
+                    return
+            if in_port == 2:
+                listen_port = 3
+                if tcph[0].has_flags(tcp.TCP_SYN) and not tcph[0].has_flags(tcp.TCP_ACK):
+                    self.ht[flow_key] = 1
+                    acts = [psr.OFPActionOutput(out_port), psr.OFPActionOutput(listen_port)]
+                elif flow_key in self.ht:
+                    self.ht[flow_key] += 1
+                    if self.ht[flow_key] < 10:
+                        acts = [psr.OFPActionOutput(out_port), psr.OFPActionOutput(listen_port)]
+                    elif self.ht[flow_key] == 10:
+                        acts = [psr.OFPActionOutput(out_port), psr.OFPActionOutput(listen_port)]
+                        del self.ht[flow_key]
+                else:
+                    acts = [psr.OFPActionOutput(1)]
+                    mtc = psr.OFPMatch(in_port=in_port,
+                        eth_type=ETH_TYPE_IP,
+                        ipv4_src=iph[0].src,
+                        ipv4_dst=iph[0].dst,
+                        ip_proto=in_proto.IPPROTO_TCP,
+                        tcp_src=tcph[0].src_port,
+                        tcp_dst=tcph[0].dst_port)
+                    self.add_flow(dp, 1, mtc, acts, msg.buffer_id)
+                    if msg.buffer_id != ofp.OFP_NO_BUFFER:
+                           return
+        #code end
         data = msg.data if msg.buffer_id == ofp.OFP_NO_BUFFER else None
         out = psr.OFPPacketOut(datapath=dp, buffer_id=msg.buffer_id,
                                in_port=in_port, actions=acts, data=data)
